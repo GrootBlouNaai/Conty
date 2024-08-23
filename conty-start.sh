@@ -99,52 +99,73 @@ launch_wrapper () {
 		"${working_dir}"/utils/ld-linux-x86-64.so.2 --library-path "${working_dir}"/utils "$@"
 	fi
 }
+# This function provides a GUI interface for users to run commands or select files.
 gui () {
-	if ! command -v zenity 1>/dev/null; then
-		exit 1
-	fi
-	gui_response=$(zenity --title="Conty" \
-		--entry \
-		--text="Enter a command or select a file you want to run" \
-		--ok-label="Run" \
-		--cancel-label="Quit" \
-		--extra-button="Select a file" \
-		--extra-button="Open a terminal")
-	gui_exit_code=$?
-	if [ "${gui_response}" = "Select a file" ]; then
-		filepath="$(zenity --title="A file to run" --file-selection)"
-		if [ -f "${filepath}" ]; then
-			[ -x "${filepath}" ] || chmod +x "${filepath}"
-			"${filepath}"
-		else
-			zenity --error --text="You did not select a file"
-		fi
-	elif [ "${gui_response}" = "Open a terminal" ]; then
-		if command -v lxterminal 1>/dev/null; then
-			lxterminal -T "Conty terminal" --command="bash -c 'echo Welcome to Conty; echo Enter any commands you want to execute; bash'"
-		else
-			zenity --error --text="A terminal emulator is not installed in this instance of Conty"
-		fi
-	elif [ "${gui_exit_code}" = 0 ]; then
-		if [ -z "${gui_response}" ]; then
-			zenity --error --text="You need to enter a command to execute"
-		else
-			for a in ${gui_response}; do
-				if [ "${a:0:1}" = "\"" ] || [ "${a:0:1}" = "'" ] || [ -n "${combined_args}" ]; then
-					combined_args="${combined_args} ${a}"
-					if [ "${a: -1}" = "\"" ] || [ "${a: -1}" = "'" ]; then
-						combined_args="${combined_args:2}"
-						combined_args="${combined_args%?}"
-						launch_command+=("${combined_args}")
-						unset combined_args
-					fi
-					continue
-				fi
-				launch_command+=("${a}")
-			done
-			"${launch_command[@]}"
-		fi
-	fi
+    if ! command -v zenity 1>/dev/null; then
+        exit 1
+    fi
+
+    gui_response=$(zenity --title="Conty" \
+        --entry \
+        --text="Enter a command or select a file you want to run" \
+        --ok-label="Run" \
+        --cancel-label="Quit" \
+        --extra-button="Select a file" \
+        --extra-button="Open a terminal")
+    gui_exit_code=$?
+
+    if [ "${gui_response}" = "Select a file" ]; then
+        handle_file_selection
+    elif [ "${gui_response}" = "Open a terminal" ]; then
+        open_terminal
+    elif [ "${gui_exit_code}" = 0 ]; then
+        execute_command "${gui_response}"
+    fi
+}
+
+# Handles the selection and execution of a file by the user.
+handle_file_selection () {
+    filepath="$(zenity --title="A file to run" --file-selection)"
+    if [ -f "${filepath}" ]; then
+        [ -x "${filepath}" ] || chmod +x "${filepath}"
+        "${filepath}"
+    else
+        zenity --error --text="You did not select a file"
+    fi
+}
+
+# Opens a terminal for the user to execute commands.
+open_terminal () {
+    if command -v lxterminal 1>/dev/null; then
+        lxterminal -T "Conty terminal" --command="bash -c 'echo Welcome to Conty; echo Enter any commands you want to execute; bash'"
+    else
+        zenity --error --text="A terminal emulator is not installed in this instance of Conty"
+    fi
+}
+
+# Executes the command entered by the user.
+execute_command () {
+    local gui_response="$1"
+    if [ -z "${gui_response}" ]; then
+        zenity --error --text="You need to enter a command to execute"
+    else
+        local combined_args=""
+        local -a launch_command=()
+        for a in ${gui_response}; do
+            if [ "${a:0:1}" = "\"" ] || [ "${a:0:1}" = "'" ] || [ -n "${combined_args}" ]; then
+                combined_args="${combined_args} ${a}"
+                if [ "${a: -1}" = "\"" ] || [ "${a: -1}" = "'" ]; then
+                    combined_args="${combined_args:2}"
+                    combined_args="${combined_args%?}"
+                    launch_command+=("${combined_args}")
+                    unset combined_args
+                fi
+                continue
+            fi
+            launch_command+=("${a}")
+        done
+        "${launch_command[@]}"
+    fi
 }
 mount_overlayfs () {
 	mkdir -p "${overlayfs_dir}"/up
