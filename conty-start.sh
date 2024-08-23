@@ -99,20 +99,27 @@ launch_wrapper () {
 		"${working_dir}"/utils/ld-linux-x86-64.so.2 --library-path "${working_dir}"/utils "$@"
 	fi
 }
-# This function provides a GUI interface for users to run commands or select files.
-gui () {
-    if ! command -v zenity 1>/dev/null; then
+
+# Checks if zenity is installed on the system.
+check_zenity_installed () {
+    if ! command -v zenity &> /dev/null; then
         exit 1
     fi
+}
 
-    gui_response=$(zenity --title="Conty" \
+# This function provides a GUI interface for users to run commands or select files.
+# Handles user response based on exit code and selected options.
+gui () {
+    check_zenity_installed
+
+    local gui_response=$(zenity --title="Conty" \
         --entry \
         --text="Enter a command or select a file you want to run" \
         --ok-label="Run" \
         --cancel-label="Quit" \
         --extra-button="Select a file" \
         --extra-button="Open a terminal")
-    gui_exit_code=$?
+    local gui_exit_code=$?
 
     if [ "${gui_response}" = "Select a file" ]; then
         handle_file_selection
@@ -123,10 +130,16 @@ gui () {
     fi
 }
 
+# Selects a file using zenity file selection dialog.
+select_file () {
+    zenity --title="A file to run" --file-selection
+}
+
 # Handles the selection and execution of a file by the user.
 handle_file_selection () {
-    filepath="$(zenity --title="A file to run" --file-selection)"
+    local filepath=$(select_file)
     if [ -f "${filepath}" ]; then
+        # Checks if the selected file is executable and makes it executable if not.
         [ -x "${filepath}" ] || chmod +x "${filepath}"
         "${filepath}"
     else
@@ -134,13 +147,40 @@ handle_file_selection () {
     fi
 }
 
+# Checks if a compatible terminal emulator is installed.
+check_terminal_emulator () {
+    command -v lxterminal &> /dev/null
+}
+
 # Opens a terminal for the user to execute commands.
 open_terminal () {
-    if command -v lxterminal 1>/dev/null; then
+    # Opens a terminal if a compatible terminal emulator is found.
+    if check_terminal_emulator; then
         lxterminal -T "Conty terminal" --command="bash -c 'echo Welcome to Conty; echo Enter any commands you want to execute; bash'"
     else
         zenity --error --text="A terminal emulator is not installed in this instance of Conty"
     fi
+}
+
+# Parses the command input and handles argument combining.
+parse_command () {
+    local gui_response="$1"
+    local combined_args=""
+    local -a launch_command=()
+    for a in ${gui_response}; do
+        if [ "${a:0:1}" = "\"" ] || [ "${a:0:1}" = "'" ] || [ -n "${combined_args}" ]; then
+            combined_args="${combined_args} ${a}"
+            if [ "${a: -1}" = "\"" ] || [ "${a: -1}" = "'" ]; then
+                combined_args="${combined_args:2}"
+                combined_args="${combined_args%?}"
+                launch_command+=("${combined_args}")
+                unset combined_args
+            fi
+            continue
+        fi
+        launch_command+=("${a}")
+    done
+    echo "${launch_command[@]}"
 }
 
 # Executes the command entered by the user.
@@ -149,234 +189,306 @@ execute_command () {
     if [ -z "${gui_response}" ]; then
         zenity --error --text="You need to enter a command to execute"
     else
-        local combined_args=""
-        local -a launch_command=()
-        for a in ${gui_response}; do
-            if [ "${a:0:1}" = "\"" ] || [ "${a:0:1}" = "'" ] || [ -n "${combined_args}" ]; then
-                combined_args="${combined_args} ${a}"
-                if [ "${a: -1}" = "\"" ] || [ "${a: -1}" = "'" ]; then
-                    combined_args="${combined_args:2}"
-                    combined_args="${combined_args%?}"
-                    launch_command+=("${combined_args}")
-                    unset combined_args
-                fi
-                continue
-            fi
-            launch_command+=("${a}")
-        done
+        # Parses the command input and handles argument combining.
+        local launch_command=($(parse_command "${gui_response}"))
+        # Executes the parsed command.
         "${launch_command[@]}"
     fi
 }
+
+# Helper function to check if NVIDIA should be shared
+should_share_nvidia() {
+    [ "${1}" = "share_nvidia" ]
+}
+
+# Function to get NVIDIA driver URL
+get_nvidia_driver_url() {
+    echo "https://us.download.nvidia.com/XFree86/Linux-x86_64/${NVIDIA_DRIVER_VERSION}/NVIDIA-Linux-x86_64-${NVIDIA_DRIVER_VERSION}.run"
+}
+
+# Function to install NVIDIA driver
+install_nvidia_driver() {
+    chmod +x nvidia.run
+    ./nvidia.run --target nvidia-driver -x &>/dev/null
+    if [ -f nvidia-driver/nvidia-installer ]; then
+        cd nvidia-driver || exit 1
+        chmod +x nvidia-installer
+        fakeroot ./nvidia-installer --silent --no-x-check --no-kernel-module &>/dev/null
+        rm -rf "${NVIDIA_DRIVERS_DIR}"/nvidia.run "${NVIDIA_DRIVERS_DIR}"/nvidia-driver
+        if [ -s /usr/lib/libGLX_nvidia.so."${NVIDIA_DRIVER_VERSION}" ] || \
+           [ -s /usr/lib/libGL.so."${NVIDIA_DRIVER_VERSION}" ]; then
+            echo "${NVIDIA_DRIVER_VERSION}" > "${NVIDIA_DRIVERS_DIR}"/current-nvidia-version
+            echo "The driver installed successfully"
+        else
+            echo "Failed to install the driver"
+        fi
+    else
+        echo "Failed to extract the driver"
+    fi
+}
+
+# Function to update system packages
+update_system_packages() {
+    reflector --protocol https --score 5 --sort rate --save /etc/pacman.d/mirrorlist
+    fakeroot -- pacman -Syy 2>/dev/null
+    date -u +"%d-%m-%Y %H:%M (DMY UTC)" > /version
+    fakeroot -- pacman --noconfirm -S archlinux-keyring 2>/dev/null
+    fakeroot -- pacman --noconfirm -S chaotic-keyring 2>/dev/null
+    rm -rf /etc/pacman.d/gnupg/*
+    fakeroot -- pacman-key --init
+    echo "keyserver hkps://keyserver.ubuntu.com" >> /etc/pacman.d/gnupg/gpg.conf
+    fakeroot -- pacman-key --populate archlinux
+    fakeroot -- pacman-key --populate chaotic
+    fakeroot -- pacman --noconfirm --overwrite "*" -Su 2>/dev/null
+}
+
+# Function to install required packages
+install_required_packages() {
+    fakeroot -- pacman --noconfirm -Runs ${pkgsremove} 2>/dev/null
+    fakeroot -- pacman --noconfirm -S ${pkgsinstall} 2>/dev/null
+    ldconfig -C /etc/ld.so.cache
+    rm -f /var/cache/pacman/pkg/*
+}
+
 mount_overlayfs () {
-	mkdir -p "${overlayfs_dir}"/up
-	mkdir -p "${overlayfs_dir}"/work
-	mkdir -p "${overlayfs_dir}"/merged
-	mkdir -p "${nvidia_drivers_dir}"
-	if [ ! "$(ls "${overlayfs_dir}"/merged 2>/dev/null)" ]; then
-		if command -v "${unionfs_fuse}" 1>/dev/null; then
-			if [ "${1}" = "share_nvidia" ]; then
-				launch_wrapper "${unionfs_fuse}" -o relaxed_permissions,cow,noatime "${overlayfs_dir}"/up=RW:"${overlayfs_shared_dir}"/up=RO:"${mount_point}"=RO "${overlayfs_dir}"/merged
-			else
-				launch_wrapper "${unionfs_fuse}" -o relaxed_permissions,cow,noatime "${overlayfs_dir}"/up=RW:"${mount_point}"=RO "${overlayfs_dir}"/merged
-			fi
-		else
-			echo "unionfs-fuse not found"
-			return 1
-		fi
-	fi
+    mkdir -p "${OVERLAYFS_DIR}"/up
+    mkdir -p "${OVERLAYFS_DIR}"/work
+    mkdir -p "${OVERLAYFS_DIR}"/merged
+    mkdir -p "${NVIDIA_DRIVERS_DIR}"
+
+    # Checks if the merged directory is empty before mounting
+    if [ ! "$(ls "${OVERLAYFS_DIR}"/merged 2>/dev/null)" ]; then
+        if command -v "${unionfs_fuse}" 1>/dev/null; then
+            if should_share_nvidia "${1}"; then
+                launch_wrapper "${unionfs_fuse}" -o relaxed_permissions,cow,noatime "${OVERLAYFS_DIR}"/up=RW:"${overlayfs_shared_dir}"/up=RO:"${mount_point}"=RO "${OVERLAYFS_DIR}"/merged
+            else
+                launch_wrapper "${unionfs_fuse}" -o relaxed_permissions,cow,noatime "${OVERLAYFS_DIR}"/up=RW:"${mount_point}"=RO "${OVERLAYFS_DIR}"/merged
+            fi
+        else
+            echo "unionfs-fuse not found"
+            return 1
+        fi
+    fi
 }
+
 nvidia_driver_handler () {
-	OLD_PWD="${PWD}"
-	rm -rf "${nvidia_drivers_dir}"/nvidia.run "${nvidia_drivers_dir}"/nvidia-driver
-	mkdir -p "${nvidia_drivers_dir}"
-	cd "${nvidia_drivers_dir}"
-	echo "Found Nvidia driver ${nvidia_driver_version}"
-	echo "Downloading the Nvidia driver ${nvidia_driver_version}..."
-	driver_url="https://us.download.nvidia.com/XFree86/Linux-x86_64/${nvidia_driver_version}/NVIDIA-Linux-x86_64-${nvidia_driver_version}.run"
-	curl -#Lo nvidia.run "${driver_url}"
-	if [ ! -s nvidia.run ] || [ "$(stat -c%s nvidia.run)" -lt 30000000 ]; then
-		rm -f nvidia.run
-		driver_url="https:$(curl -#Lo - "https://raw.githubusercontent.com/flathub/org.freedesktop.Platform.GL.nvidia/master/data/nvidia-${nvidia_driver_version}-x86_64.data" | cut -d ':' -f 6)"
-		curl -#Lo nvidia.run "${driver_url}"
-	fi
-	if [ -s nvidia.run ]; then
-		echo "Installing the Nvidia driver, please wait..."
-		chmod +x nvidia.run
-		./nvidia.run --target nvidia-driver -x &>/dev/null
-		if [ -f nvidia-driver/nvidia-installer ]; then
-			cd nvidia-driver || exit 1
-			chmod +x nvidia-installer
-			fakeroot ./nvidia-installer --silent --no-x-check --no-kernel-module &>/dev/null
-			rm -rf "${nvidia_drivers_dir}"/nvidia.run "${nvidia_drivers_dir}"/nvidia-driver
-			if [ -s /usr/lib/libGLX_nvidia.so."${nvidia_driver_version}" ] || \
-			   [ -s /usr/lib/libGL.so."${nvidia_driver_version}" ]; then
-				echo "${nvidia_driver_version}" > "${nvidia_drivers_dir}"/current-nvidia-version
-				echo "The driver installed successfully"
-			else
-				echo "Failed to install the driver"
-			fi
-		else
-			echo "Failed to extract the driver"
-		fi
-	else
-		echo "Failed to download the driver"
-	fi
-	cd "${OLD_PWD}"
+    OLD_PWD="${PWD}"
+    rm -rf "${NVIDIA_DRIVERS_DIR}"/nvidia.run "${NVIDIA_DRIVERS_DIR}"/nvidia-driver
+    mkdir -p "${NVIDIA_DRIVERS_DIR}"
+    cd "${NVIDIA_DRIVERS_DIR}"
+
+    echo "Found Nvidia driver ${NVIDIA_DRIVER_VERSION}"
+
+    # Downloads the Nvidia driver from the official source
+    echo "Downloading the Nvidia driver ${NVIDIA_DRIVER_VERSION}..."
+    driver_url=$(get_nvidia_driver_url)
+    curl -#Lo nvidia.run "${driver_url}"
+
+    # Checks if the downloaded driver file is valid
+    if [ ! -s nvidia.run ] || [ "$(stat -c%s nvidia.run)" -lt 30000000 ]; then
+        rm -f nvidia.run
+        driver_url="https:$(curl -#Lo - "https://raw.githubusercontent.com/flathub/org.freedesktop.Platform.GL.nvidia/master/data/nvidia-${NVIDIA_DRIVER_VERSION}-x86_64.data" | cut -d ':' -f 6)"
+        curl -#Lo nvidia.run "${driver_url}"
+    fi
+
+    if [ -s nvidia.run ]; then
+        echo "Installing the Nvidia driver, please wait..."
+        install_nvidia_driver
+    else
+        echo "Failed to download the driver"
+    fi
+
+    cd "${OLD_PWD}"
 }
+
 update_conty () {
-	if [ "$(ls /var/cache/pacman/pkg_host 2>/dev/null)" ]; then
-		mkdir -p /var/cache/pacman/pkg
-		ln -s /var/cache/pacman/pkg_host/* /var/cache/pacman/pkg 2>/dev/null
-	fi
-	reflector --protocol https --score 5 --sort rate --save /etc/pacman.d/mirrorlist
-	fakeroot -- pacman -Syy 2>/dev/null
-	date -u +"%d-%m-%Y %H:%M (DMY UTC)" > /version
-	fakeroot -- pacman --noconfirm -S archlinux-keyring 2>/dev/null
-	fakeroot -- pacman --noconfirm -S chaotic-keyring 2>/dev/null
-	rm -rf /etc/pacman.d/gnupg/*
-	fakeroot -- pacman-key --init
-	echo "keyserver hkps://keyserver.ubuntu.com" >> /etc/pacman.d/gnupg/gpg.conf
-	fakeroot -- pacman-key --populate archlinux
-	fakeroot -- pacman-key --populate chaotic
-	fakeroot -- pacman --noconfirm --overwrite "*" -Su 2>/dev/null
-	fakeroot -- pacman --noconfirm -Runs ${pkgsremove} 2>/dev/null
-	fakeroot -- pacman --noconfirm -S ${pkgsinstall} 2>/dev/null
-	ldconfig -C /etc/ld.so.cache
-	rm -f /var/cache/pacman/pkg/*
-	pacman -Q > /pkglist.x86_64.txt
-	update-ca-trust
-	locale-gen
+    # Updates the system packages and configurations
+    if [ "$(ls /var/cache/pacman/pkg_host 2>/dev/null)" ]; then
+        mkdir -p /var/cache/pacman/pkg
+        ln -s /var/cache/pacman/pkg_host/* /var/cache/pacman/pkg 2>/dev/null
+    fi
+
+    update_system_packages
+    install_required_packages
+
+    # Generates the package list after updates
+    pacman -Q > /pkglist.x86_64.txt
+    update-ca-trust
+    locale-gen
 }
+# Setup and execution of a containerized environment using FUSE and Dwarfs/Squashfuse.
+
+# Function to calculate optimal Dwarfs settings based on system resources
+calculate_dwarfs_settings() {
+    if getconf _PHYS_PAGES &>/dev/null && getconf PAGE_SIZE &>/dev/null; then
+        memory_size="$(($(getconf _PHYS_PAGES) * $(getconf PAGE_SIZE) / (1024 * 1024)))"
+        if [ "${memory_size}" -ge 45000 ]; then
+            dwarfs_cache_size="4096M"
+        elif [ "${memory_size}" -ge 23000 ]; then
+            dwarfs_cache_size="2048M"
+        elif [ "${memory_size}" -ge 15000 ]; then
+            dwarfs_cache_size="1024M"
+        elif [ "${memory_size}" -ge 7000 ]; then
+            dwarfs_cache_size="512M"
+        elif [ "${memory_size}" -ge 3000 ]; then
+            dwarfs_cache_size="256M"
+        elif [ "${memory_size}" -ge 1500 ]; then
+            dwarfs_cache_size="128M"
+        else
+            dwarfs_cache_size="64M"
+        fi
+    fi
+
+    if getconf _NPROCESSORS_ONLN &>/dev/null; then
+        dwarfs_num_workers="$(getconf _NPROCESSORS_ONLN)"
+        if [ "${dwarfs_num_workers}" -ge 8 ]; then
+            dwarfs_num_workers=8
+        fi
+    fi
+}
+
+# Function to determine which tools to use based on the image type and system utilities availability
+set_tools() {
+    if [ "${dwarfs_image}" = 1 ]; then
+        mount_tool="${working_dir}/utils/dwarfs${fuse_version}"
+        extraction_tool="${working_dir}/utils/dwarfsextract"
+        compression_tool="${working_dir}/utils/mkdwarfs"
+    else
+        mount_tool="${working_dir}/utils/squashfuse${fuse_version}"
+        extraction_tool="${working_dir}/utils/unsquashfs"
+        compression_tool="${working_dir}/utils/mksquashfs"
+    fi
+    bwrap="${working_dir}/utils/bwrap"
+    unionfs_fuse="${working_dir}/utils/unionfs${fuse_version}"
+}
+
+# Function to check if /tmp is mounted with noexec
+check_tmp_noexec() {
+    if ! exec_test; then
+        echo "Seems like /tmp is mounted with noexec or you don't have write access!"
+        echo "Please remount it without noexec or set BASE_DIR to a different location."
+        exit 1
+    fi
+}
+
+# Function to extract the image if the -e flag is provided
+extract_image() {
+    if command -v "${extraction_tool}" 1>/dev/null; then
+        if [ "${dwarfs_image}" = 1 ]; then
+            echo "Extracting the image..."
+            mkdir "$(basename "${script}")_files"
+            launch_wrapper "${extraction_tool}" -i "${script}" -o "$(basename "${script}")_files" -O "${offset}"
+            echo "Done"
+        else
+            launch_wrapper "${extraction_tool}" -o "${offset}" -user-xattrs -d "$(basename "${script}")_files" "${script}"
+        fi
+    else
+        echo "Extraction tool not found"
+        exit 1
+    fi
+}
+
+# Function to display Bubblewrap help if the -H flag is provided
+show_bwrap_help() {
+    launch_wrapper "${bwrap}" --help
+}
+
+# Main script logic
 if ! command -v fusermount3 1>/dev/null && ! command -v fusermount 1>/dev/null; then
-	echo "Please install fuse2 or fuse3 and run the script again."
-	exit 1
+    echo "Please install fuse2 or fuse3 and run the script again."
+    exit 1
 fi
+
 if command -v fusermount3 1>/dev/null; then
-	fuse_version=3
+    fuse_version=3
 fi
+
 dwarfs_cache_size="128M"
 dwarfs_num_workers="2"
+
 if [ "${dwarfs_image}" = 1 ]; then
-	if getconf _PHYS_PAGES &>/dev/null && getconf PAGE_SIZE &>/dev/null; then
-		memory_size="$(($(getconf _PHYS_PAGES) * $(getconf PAGE_SIZE) / (1024 * 1024)))"
-		if [ "${memory_size}" -ge 45000 ]; then
-			dwarfs_cache_size="4096M"
-		elif [ "${memory_size}" -ge 23000 ]; then
-			dwarfs_cache_size="2048M"
-		elif [ "${memory_size}" -ge 15000 ]; then
-			dwarfs_cache_size="1024M"
-		elif [ "${memory_size}" -ge 7000 ]; then
-			dwarfs_cache_size="512M"
-		elif [ "${memory_size}" -ge 3000 ]; then
-			dwarfs_cache_size="256M"
-		elif [ "${memory_size}" -ge 1500 ]; then
-			dwarfs_cache_size="128M"
-		else
-			dwarfs_cache_size="64M"
-		fi
-	fi
-	if getconf _NPROCESSORS_ONLN &>/dev/null; then
-		dwarfs_num_workers="$(getconf _NPROCESSORS_ONLN)"
-		if [ "${dwarfs_num_workers}" -ge 8 ]; then
-			dwarfs_num_workers=8
-		fi
-	fi
+    calculate_dwarfs_settings
 fi
+
 mkdir -p "${working_dir}"
+
 if ([ "${USE_SYS_UTILS}" != 1 ] && [ "${utils_size}" -gt 0 ]) || [ "$1" = "-u" ]; then
-	if ! exec_test; then
-		if [ -z "${BASE_DIR}" ]; then
-			export working_dir="${HOME}"/.local/share/Conty/"${conty_dir_name}"
-			if [ -z "${CUSTOM_MNT}" ]; then
-				mount_point="${working_dir}"/mnt
-			fi
-		fi
-		if ! exec_test; then
-			echo "Seems like /tmp is mounted with noexec or you don't have write access!"
-			echo "Please remount it without noexec or set BASE_DIR to a different location."
-			exit 1
-		fi
-	fi
-	if ! command -v tar 1>/dev/null || ! command -v gzip 1>/dev/null; then
-		echo "Please install tar and gzip and run the script again."
-		exit 1
-	fi
-	if [ "${dwarfs_image}" = 1 ]; then
-		mount_tool="${working_dir}"/utils/dwarfs"${fuse_version}"
-		extraction_tool="${working_dir}"/utils/dwarfsextract
-		compression_tool="${working_dir}"/utils/mkdwarfs
-	else
-		mount_tool="${working_dir}"/utils/squashfuse"${fuse_version}"
-		extraction_tool="${working_dir}"/utils/unsquashfs
-		compression_tool="${working_dir}"/utils/mksquashfs
-	fi
-	bwrap="${working_dir}"/utils/bwrap
-	unionfs_fuse="${working_dir}"/utils/unionfs"${fuse_version}"
-	if [ ! -f "${mount_tool}" ] || [ ! -f "${bwrap}" ]; then
-		tail -c +$((init_size+bash_size+script_size+busybox_size+1)) "${script}" | head -c "${utils_size}" | tar -C "${working_dir}" -zxf -
-		if [ ! -f "${mount_tool}" ] || [ ! -f "${bwrap}" ]; then
-			clear
-			echo "The integrated utils were not extracted!"
-			echo "Perhaps something is wrong with the integrated utils.tar.gz."
-			exit 1
-		fi
-		chmod +x "${mount_tool}" 2>/dev/null
-		chmod +x "${bwrap}" 2>/dev/null
-		chmod +x "${extraction_tool}" 2>/dev/null
-		chmod +x "${unionfs_fuse}" 2>/dev/null
-		chmod +x "${compression_tool}" 2>/dev/null
-	fi
+    if ! exec_test; then
+        if [ -z "${BASE_DIR}" ]; then
+            export working_dir="${HOME}/.local/share/Conty/${conty_dir_name}"
+            if [ -z "${CUSTOM_MNT}" ]; then
+                mount_point="${working_dir}/mnt"
+            fi
+        fi
+        check_tmp_noexec
+    fi
+
+    if ! command -v tar 1>/dev/null || ! command -v gzip 1>/dev/null; then
+        echo "Please install tar and gzip and run the script again."
+        exit 1
+    fi
+
+    set_tools
+
+    if [ ! -f "${mount_tool}" ] || [ ! -f "${bwrap}" ]; then
+        tail -c +$((init_size+bash_size+script_size+busybox_size+1)) "${script}" | head -c "${utils_size}" | tar -C "${working_dir}" -zxf -
+        if [ ! -f "${mount_tool}" ] || [ ! -f "${bwrap}" ]; then
+            clear
+            echo "The integrated utils were not extracted!"
+            echo "Perhaps something is wrong with the integrated utils.tar.gz."
+            exit 1
+        fi
+        chmod +x "${mount_tool}" 2>/dev/null
+        chmod +x "${bwrap}" 2>/dev/null
+        chmod +x "${extraction_tool}" 2>/dev/null
+        chmod +x "${unionfs_fuse}" 2>/dev/null
+        chmod +x "${compression_tool}" 2>/dev/null
+    fi
 else
-	if ! command -v bwrap 1>/dev/null; then
-		echo "USE_SYS_UTILS is enabled, but bubblewrap is not installed!"
-		echo "Please install it and run the script again."
-		exit 1
-	fi
-	bwrap=bwrap
-	unionfs_fuse=unionfs
-	if [ "${dwarfs_image}" = 1 ]; then
-		if ! command -v dwarfs 1>/dev/null && ! command -v dwarfs2 1>/dev/null; then
-			echo "USE_SYS_UTILS is enabled, but dwarfs is not installed!"
-			echo "Please install it and run the script again."
-			exit 1
-		fi
-		if command -v dwarfs2 1>/dev/null; then
-			mount_tool=dwarfs2
-		else
-			mount_tool=dwarfs
-		fi
-		extraction_tool=dwarfsextract
-	else
-		if ! command -v squashfuse 1>/dev/null; then
-			echo "USE_SYS_UTILS is enabled, but squashfuse is not installed!"
-			echo "Please install it and run the script again."
-			exit 1
-		fi
-		mount_tool=squashfuse
-		extraction_tool=unsquashfs
-	fi
-	show_msg "Using system-wide ${mount_tool} and bwrap"
+    if ! command -v bwrap 1>/dev/null; then
+        echo "USE_SYS_UTILS is enabled, but bubblewrap is not installed!"
+        echo "Please install it and run the script again."
+        exit 1
+    fi
+
+    bwrap=bwrap
+    unionfs_fuse=unionfs
+
+    if [ "${dwarfs_image}" = 1 ]; then
+        if ! command -v dwarfs 1>/dev/null && ! command -v dwarfs2 1>/dev/null; then
+            echo "USE_SYS_UTILS is enabled, but dwarfs is not installed!"
+            echo "Please install it and run the script again."
+            exit 1
+        fi
+        if command -v dwarfs2 1>/dev/null; then
+            mount_tool=dwarfs2
+        else
+            mount_tool=dwarfs
+        fi
+        extraction_tool=dwarfsextract
+    else
+        if ! command -v squashfuse 1>/dev/null; then
+            echo "USE_SYS_UTILS is enabled, but squashfuse is not installed!"
+            echo "Please install it and run the script again."
+            exit 1
+        fi
+        mount_tool=squashfuse
+        extraction_tool=unsquashfs
+    fi
+
+    show_msg "Using system-wide ${mount_tool} and bwrap"
 fi
+
 if [ "$1" = "-e" ] && [ -z "${script_is_symlink}" ]; then
-	if command -v "${extraction_tool}" 1>/dev/null; then
-		if [ "${dwarfs_image}" = 1 ]; then
-			echo "Extracting the image..."
-			mkdir "$(basename "${script}")"_files
-			launch_wrapper "${extraction_tool}" -i "${script}" -o "$(basename "${script}")"_files -O "${offset}"
-			echo "Done"
-		else
-			launch_wrapper "${extraction_tool}" -o "${offset}" -user-xattrs -d "$(basename "${script}")"_files "${script}"
-		fi
-	else
-		echo "Extraction tool not found"
-		exit 1
-	fi
-	exit
+    extract_image
+    exit
 fi
+
 if [ "$1" = "-H" ] && [ -z "${script_is_symlink}" ]; then
-	launch_wrapper "${bwrap}" --help
-	exit
+    show_bwrap_help
+    exit
 fi
+# This function sets up and runs a sandboxed environment using bwrap.
 run_bwrap () {
 	unset sandbox_params
 	unset unshare_net
@@ -386,14 +498,81 @@ run_bwrap () {
 	unset mount_opt
 	unset command_line
 	command_line=("${@}")
+
+	# Handles the case where WAYLAND_DISPLAY is set or defaults to 'wayland-0'.
+	set_wayland_socket
+
+	# Ensures XDG_RUNTIME_DIR is set to a valid path if not already set.
+	set_xdg_runtime_dir
+
+	# Checks if HOME is non-standard and adjusts accordingly.
+	handle_non_standard_home
+
+	# Sets up parameters for sandboxing based on SANDBOX and SANDBOX_LEVEL.
+	set_sandbox_params
+
+	# Disables network if DISABLE_NET is set to 1.
+	disable_network
+
+	# Sets a custom home directory if HOME_DIR is set.
+	set_custom_home
+
+	# Configures XAUTHORITY and xsockets based on various conditions.
+	set_xauthority_and_xsockets
+
+	# Binds root and other necessary mounts based on conditions.
+	bind_root_and_mounts
+
+	# Sets various environment variables based on conditions.
+	set_environment_variables
+
+	show_msg
+	launch_wrapper "${bwrap}" \
+			"${bind_root[@]}" \
+			--dev-bind /dev /dev \
+			--ro-bind /sys /sys \
+			--bind-try /tmp /tmp \
+			--proc /proc \
+			--bind-try /home /home \
+			--bind-try /mnt /mnt \
+			--bind-try /media /media \
+			--bind-try /run /run \
+			--bind-try /var /var \
+			--ro-bind-try /usr/share/steam/compatibilitytools.d /usr/share/steam/compatibilitytools.d \
+			--ro-bind-try /etc/resolv.conf /etc/resolv.conf \
+			--ro-bind-try /etc/hosts /etc/hosts \
+			--ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
+			--ro-bind-try /etc/passwd /etc/passwd \
+			--ro-bind-try /etc/group /etc/group \
+			--ro-bind-try /etc/machine-id /etc/machine-id \
+			--ro-bind-try /etc/asound.conf /etc/asound.conf \
+			--ro-bind-try /etc/localtime /etc/localtime \
+			"${non_standard_home[@]}" \
+			"${sandbox_params[@]}" \
+			"${custom_home[@]}" \
+			"${mount_opt[@]}" \
+			"${xsockets[@]}" \
+			"${unshare_net[@]}" \
+			"${set_vars[@]}" \
+			--setenv PATH "${CUSTOM_PATH}" \
+			"${command_line[@]}"
+}
+
+set_wayland_socket () {
 	if [ -n "${WAYLAND_DISPLAY}" ]; then
 		wayland_socket="${WAYLAND_DISPLAY}"
 	else
 		wayland_socket="wayland-0"
 	fi
+}
+
+set_xdg_runtime_dir () {
 	if [ -z "${XDG_RUNTIME_DIR}" ]; then
 		XDG_RUNTIME_DIR="/run/user/${EUID}"
 	fi
+}
+
+handle_non_standard_home () {
 	if [ -n "${HOME}" ] && [ "$(echo "${HOME}" | head -c 6)" != "/home/" ]; then
 		HOME_BASE_DIR="$(echo "${HOME}" | cut -d '/' -f2)"
 		case "${HOME_BASE_DIR}" in
@@ -416,6 +595,9 @@ run_bwrap () {
 				;;
 		esac
 	fi
+}
+
+set_sandbox_params () {
 	if [ "${SANDBOX}" = 1 ]; then
 		sandbox_params+=(--tmpfs /home \
 						 --tmpfs /mnt \
@@ -450,10 +632,16 @@ run_bwrap () {
 		fi
 		show_msg "Sandbox is enabled ${sandbox_level_msg}"
 	fi
+}
+
+disable_network () {
 	if [ "${DISABLE_NET}" = 1 ]; then
 		show_msg "Network is disabled"
 		unshare_net=(--unshare-net)
 	fi
+}
+
+set_custom_home () {
 	if [ -n "${HOME_DIR}" ]; then
 		show_msg "Home directory is set to ${HOME_DIR}"
 		if [ -n "${non_standard_home[*]}" ]; then
@@ -463,6 +651,9 @@ run_bwrap () {
 		fi
 		[ ! -d "${HOME_DIR}" ] && mkdir -p "${HOME_DIR}"
 	fi
+}
+
+set_xauthority_and_xsockets () {
 	if [ -z "${XAUTHORITY}" ]; then
 		XAUTHORITY="${HOME}"/.Xauthority
 	fi
@@ -490,6 +681,9 @@ run_bwrap () {
 				   --unsetenv "DISPLAY" \
                    --unsetenv "XAUTHORITY")
 	fi
+}
+
+bind_root_and_mounts () {
 	if [ ! "$(ls "${mount_point}"/opt 2>/dev/null)" ] && [ -z "${SANDBOX}" ]; then
 		mount_opt=(--bind-try /opt /opt)
 	fi
@@ -504,6 +698,9 @@ run_bwrap () {
 	else
 		bind_root=(--ro-bind "${newroot_path}" /)
 	fi
+}
+
+set_environment_variables () {
 	conty_variables="BASE_DIR DISABLE_NET DISABLE_X11 HOME_DIR QUIET_MODE \
 					SANDBOX SANDBOX_LEVEL USE_OVERLAYFS NVIDIA_HANDLER \
 					USE_SYS_UTILS XEPHYR_SIZE CUSTOM_MNT"
@@ -517,36 +714,6 @@ run_bwrap () {
 	else
 		set_vars+=(--unsetenv LC_ALL)
 	fi
-	show_msg
-	launch_wrapper "${bwrap}" \
-			"${bind_root[@]}" \
-			--dev-bind /dev /dev \
-			--ro-bind /sys /sys \
-			--bind-try /tmp /tmp \
-			--proc /proc \
-			--bind-try /home /home \
-			--bind-try /mnt /mnt \
-			--bind-try /media /media \
-			--bind-try /run /run \
-			--bind-try /var /var \
-			--ro-bind-try /usr/share/steam/compatibilitytools.d /usr/share/steam/compatibilitytools.d \
-			--ro-bind-try /etc/resolv.conf /etc/resolv.conf \
-			--ro-bind-try /etc/hosts /etc/hosts \
-			--ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
-			--ro-bind-try /etc/passwd /etc/passwd \
-			--ro-bind-try /etc/group /etc/group \
-			--ro-bind-try /etc/machine-id /etc/machine-id \
-			--ro-bind-try /etc/asound.conf /etc/asound.conf \
-			--ro-bind-try /etc/localtime /etc/localtime \
-			"${non_standard_home[@]}" \
-			"${sandbox_params[@]}" \
-			"${custom_home[@]}" \
-			"${mount_opt[@]}" \
-			"${xsockets[@]}" \
-			"${unshare_net[@]}" \
-			"${set_vars[@]}" \
-			--setenv PATH "${CUSTOM_PATH}" \
-			"${command_line[@]}"
 }
 exit_function () {
 	sleep 3
