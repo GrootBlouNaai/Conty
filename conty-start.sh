@@ -488,232 +488,244 @@ if [ "$1" = "-H" ] && [ -z "${script_is_symlink}" ]; then
     show_bwrap_help
     exit
 fi
+
 # This function sets up and runs a sandboxed environment using bwrap.
 run_bwrap () {
-	unset sandbox_params
-	unset unshare_net
-	unset custom_home
-	unset non_standard_home
-	unset xsockets
-	unset mount_opt
-	unset command_line
-	command_line=("${@}")
+    # Initialize variables
+    unset sandbox_params
+    unset unshare_net
+    unset custom_home
+    unset non_standard_home
+    unset xsockets
+    unset mount_opt
+    unset command_line
+    command_line=("${@}")
 
-	# Handles the case where WAYLAND_DISPLAY is set or defaults to 'wayland-0'.
-	set_wayland_socket
+    # Handles the case where WAYLAND_DISPLAY is set or defaults to 'wayland-0'.
+    set_wayland_socket
 
-	# Ensures XDG_RUNTIME_DIR is set to a valid path if not already set.
-	set_xdg_runtime_dir
+    # Ensures XDG_RUNTIME_DIR is set to a valid path if not already set.
+    set_xdg_runtime_dir
 
-	# Checks if HOME is non-standard and adjusts accordingly.
-	handle_non_standard_home
+    # Checks if HOME is non-standard and adjusts accordingly.
+    handle_non_standard_home
 
-	# Sets up parameters for sandboxing based on SANDBOX and SANDBOX_LEVEL.
-	set_sandbox_params
+    # Sets up parameters for sandboxing based on SANDBOX and SANDBOX_LEVEL.
+    set_sandbox_params
 
-	# Disables network if DISABLE_NET is set to 1.
-	disable_network
+    # Disables network if DISABLE_NET is set to 1.
+    disable_network
 
-	# Sets a custom home directory if HOME_DIR is set.
-	set_custom_home
+    # Sets a custom home directory if HOME_DIR is set.
+    set_custom_home
 
-	# Configures XAUTHORITY and xsockets based on various conditions.
-	set_xauthority_and_xsockets
+    # Configures XAUTHORITY and xsockets based on various conditions.
+    set_xauthority_and_xsockets
 
-	# Binds root and other necessary mounts based on conditions.
-	bind_root_and_mounts
+    # Binds root and other necessary mounts based on conditions.
+    bind_root_and_mounts
 
-	# Sets various environment variables based on conditions.
-	set_environment_variables
+    # Sets various environment variables based on conditions.
+    set_environment_variables
 
-	show_msg
-	launch_wrapper "${bwrap}" \
-			"${bind_root[@]}" \
-			--dev-bind /dev /dev \
-			--ro-bind /sys /sys \
-			--bind-try /tmp /tmp \
-			--proc /proc \
-			--bind-try /home /home \
-			--bind-try /mnt /mnt \
-			--bind-try /media /media \
-			--bind-try /run /run \
-			--bind-try /var /var \
-			--ro-bind-try /usr/share/steam/compatibilitytools.d /usr/share/steam/compatibilitytools.d \
-			--ro-bind-try /etc/resolv.conf /etc/resolv.conf \
-			--ro-bind-try /etc/hosts /etc/hosts \
-			--ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
-			--ro-bind-try /etc/passwd /etc/passwd \
-			--ro-bind-try /etc/group /etc/group \
-			--ro-bind-try /etc/machine-id /etc/machine-id \
-			--ro-bind-try /etc/asound.conf /etc/asound.conf \
-			--ro-bind-try /etc/localtime /etc/localtime \
-			"${non_standard_home[@]}" \
-			"${sandbox_params[@]}" \
-			"${custom_home[@]}" \
-			"${mount_opt[@]}" \
-			"${xsockets[@]}" \
-			"${unshare_net[@]}" \
-			"${set_vars[@]}" \
-			--setenv PATH "${CUSTOM_PATH}" \
-			"${command_line[@]}"
+    # Display message and launch the wrapper
+    show_msg
+    launch_wrapper "${bwrap}" \
+        "${bind_root[@]}" \
+        --dev-bind /dev /dev \
+        --ro-bind /sys /sys \
+        --bind-try /tmp /tmp \
+        --proc /proc \
+        --bind-try /home /home \
+        --bind-try /mnt /mnt \
+        --bind-try /media /media \
+        --bind-try /run /run \
+        --bind-try /var /var \
+        --ro-bind-try /usr/share/steam/compatibilitytools.d /usr/share/steam/compatibilitytools.d \
+        --ro-bind-try /etc/resolv.conf /etc/resolv.conf \
+        --ro-bind-try /etc/hosts /etc/hosts \
+        --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
+        --ro-bind-try /etc/passwd /etc/passwd \
+        --ro-bind-try /etc/group /etc/group \
+        --ro-bind-try /etc/machine-id /etc/machine-id \
+        --ro-bind-try /etc/asound.conf /etc/asound.conf \
+        --ro-bind-try /etc/localtime /etc/localtime \
+        "${non_standard_home[@]}" \
+        "${sandbox_params[@]}" \
+        "${custom_home[@]}" \
+        "${mount_opt[@]}" \
+        "${xsockets[@]}" \
+        "${unshare_net[@]}" \
+        "${set_vars[@]}" \
+        --setenv PATH "${CUSTOM_PATH}" \
+        "${command_line[@]}"
 }
 
+# Extracts the logic for setting WAYLAND_DISPLAY into a new function.
 set_wayland_socket () {
-	if [ -n "${WAYLAND_DISPLAY}" ]; then
-		wayland_socket="${WAYLAND_DISPLAY}"
-	else
-		wayland_socket="wayland-0"
-	fi
+    if [ -n "${WAYLAND_DISPLAY}" ]; then
+        wayland_socket="${WAYLAND_DISPLAY}"
+    else
+        wayland_socket="wayland-0"
+    fi
 }
 
+# Extracts the logic for setting XDG_RUNTIME_DIR into a new function.
 set_xdg_runtime_dir () {
-	if [ -z "${XDG_RUNTIME_DIR}" ]; then
-		XDG_RUNTIME_DIR="/run/user/${EUID}"
-	fi
+    if [ -z "${XDG_RUNTIME_DIR}" ]; then
+        XDG_RUNTIME_DIR="/run/user/${EUID}"
+    fi
 }
 
+# Extracts the logic for handling non-standard home directories into a new function.
 handle_non_standard_home () {
-	if [ -n "${HOME}" ] && [ "$(echo "${HOME}" | head -c 6)" != "/home/" ]; then
-		HOME_BASE_DIR="$(echo "${HOME}" | cut -d '/' -f2)"
-		case "${HOME_BASE_DIR}" in
-			tmp|mnt|media|run|var)
-				;;
-			*)
-				NEW_HOME=/home/"${USER}"
-				non_standard_home+=(--tmpfs /home \
-							--bind "${HOME}" "${NEW_HOME}" \
-							--setenv "HOME" "${NEW_HOME}" \
-	 						--setenv "XDG_CONFIG_HOME" "${NEW_HOME}"/.config \
-							--setenv "XDG_DATA_HOME" "${NEW_HOME}"/.local/share)
-				unset command_line
-				for arg in "$@"; do
-					if [[ "${arg}" == *"${HOME}"* ]]; then
-						arg="$(echo "${arg/"$HOME"/"$NEW_HOME"}")"
-					fi
-					command_line+=("${arg}")
-				done
-				;;
-		esac
-	fi
+    if [ -n "${HOME}" ] && [ "$(echo "${HOME}" | head -c 6)" != "/home/" ]; then
+        HOME_BASE_DIR="$(echo "${HOME}" | cut -d '/' -f2)"
+        case "${HOME_BASE_DIR}" in
+            tmp|mnt|media|run|var)
+                ;;
+            *)
+                NEW_HOME=/home/"${USER}"
+                non_standard_home+=(--tmpfs /home \
+                                    --bind "${HOME}" "${NEW_HOME}" \
+                                    --setenv "HOME" "${NEW_HOME}" \
+                                    --setenv "XDG_CONFIG_HOME" "${NEW_HOME}"/.config \
+                                    --setenv "XDG_DATA_HOME" "${NEW_HOME}"/.local/share)
+                unset command_line
+                for arg in "$@"; do
+                    if [[ "${arg}" == *"${HOME}"* ]]; then
+                        arg="$(echo "${arg/"$HOME"/"$NEW_HOME"}")"
+                    fi
+                    command_line+=("${arg}")
+                done
+                ;;
+        esac
+    fi
 }
 
+# Extracts the logic for setting sandbox parameters into a new function.
 set_sandbox_params () {
-	if [ "${SANDBOX}" = 1 ]; then
-		sandbox_params+=(--tmpfs /home \
-						 --tmpfs /mnt \
-						 --tmpfs /media \
-						 --tmpfs /var \
-						 --tmpfs /run \
-						 --symlink /run /var/run \
-						 --tmpfs /tmp \
-						 --new-session)
-		if [ -n "${non_standard_home[*]}" ]; then
-			sandbox_params+=(--dir "${NEW_HOME}")
-		else
-			sandbox_params+=(--dir "${HOME}")
-		fi
-		if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 2 ]; then
-			sandbox_level_msg="(level 2)"
-			sandbox_params+=(--dir "${XDG_RUNTIME_DIR}" \
+    if [ "${SANDBOX}" = 1 ]; then
+        sandbox_params+=(--tmpfs /home \
+                         --tmpfs /mnt \
+                         --tmpfs /media \
+                         --tmpfs /var \
+                         --tmpfs /run \
+                         --symlink /run /var/run \
+                         --tmpfs /tmp \
+                         --new-session)
+        if [ -n "${non_standard_home[*]}" ]; then
+            sandbox_params+=(--dir "${NEW_HOME}")
+        else
+            sandbox_params+=(--dir "${HOME}")
+        fi
+        if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 2 ]; then
+            sandbox_level_msg="(level 2)"
+            sandbox_params+=(--dir "${XDG_RUNTIME_DIR}" \
                              --ro-bind-try "${XDG_RUNTIME_DIR}"/"${wayland_socket}" "${XDG_RUNTIME_DIR}"/"${wayland_socket}" \
                              --ro-bind-try "${XDG_RUNTIME_DIR}"/pulse "${XDG_RUNTIME_DIR}"/pulse \
                              --ro-bind-try "${XDG_RUNTIME_DIR}"/pipewire-0 "${XDG_RUNTIME_DIR}"/pipewire-0 \
                              --unshare-pid \
                              --unshare-user-try \
                              --unsetenv "DBUS_SESSION_BUS_ADDRESS")
-		else
-			sandbox_level_msg="(level 1)"
-			sandbox_params+=(--bind-try "${XDG_RUNTIME_DIR}" "${XDG_RUNTIME_DIR}" \
-							 --bind-try /run/dbus /run/dbus)
-		fi
-		if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 3 ]; then
-			sandbox_level_msg="(level 3)"
-			DISABLE_NET=1
-		fi
-		show_msg "Sandbox is enabled ${sandbox_level_msg}"
-	fi
+        else
+            sandbox_level_msg="(level 1)"
+            sandbox_params+=(--bind-try "${XDG_RUNTIME_DIR}" "${XDG_RUNTIME_DIR}" \
+                             --bind-try /run/dbus /run/dbus)
+        fi
+        if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 3 ]; then
+            sandbox_level_msg="(level 3)"
+            DISABLE_NET=1
+        fi
+        show_msg "Sandbox is enabled ${sandbox_level_msg}"
+    fi
 }
 
+# Extracts the logic for disabling network into a new function.
 disable_network () {
-	if [ "${DISABLE_NET}" = 1 ]; then
-		show_msg "Network is disabled"
-		unshare_net=(--unshare-net)
-	fi
+    if [ "${DISABLE_NET}" = 1 ]; then
+        show_msg "Network is disabled"
+        unshare_net=(--unshare-net)
+    fi
 }
 
+# Extracts the logic for setting custom home directory into a new function.
 set_custom_home () {
-	if [ -n "${HOME_DIR}" ]; then
-		show_msg "Home directory is set to ${HOME_DIR}"
-		if [ -n "${non_standard_home[*]}" ]; then
-			custom_home+=(--bind "${HOME_DIR}" "${NEW_HOME}")
-		else
-			custom_home+=(--bind "${HOME_DIR}" "${HOME}")
-		fi
-		[ ! -d "${HOME_DIR}" ] && mkdir -p "${HOME_DIR}"
-	fi
+    if [ -n "${HOME_DIR}" ]; then
+        show_msg "Home directory is set to ${HOME_DIR}"
+        if [ -n "${non_standard_home[*]}" ]; then
+            custom_home+=(--bind "${HOME_DIR}" "${NEW_HOME}")
+        else
+            custom_home+=(--bind "${HOME_DIR}" "${HOME}")
+        fi
+        [ ! -d "${HOME_DIR}" ] && mkdir -p "${HOME_DIR}"
+    fi
 }
 
+# Extracts the logic for setting XAUTHORITY and xsockets into a new function.
 set_xauthority_and_xsockets () {
-	if [ -z "${XAUTHORITY}" ]; then
-		XAUTHORITY="${HOME}"/.Xauthority
-	fi
-	xsockets+=(--tmpfs /tmp/.X11-unix)
-	if [ -n "${non_standard_home[*]}" ] && [ "${XAUTHORITY}" = "${HOME}"/.Xauthority ]; then
-		xsockets+=(--ro-bind-try "${XAUTHORITY}" "${NEW_HOME}"/.Xauthority \
-		           --setenv "XAUTHORITY" "${NEW_HOME}"/.Xauthority)
-	else
-		xsockets+=(--ro-bind-try "${XAUTHORITY}" "${XAUTHORITY}")
-	fi
-	if [ "${DISABLE_X11}" != 1 ]; then
-		if [ "$(ls /tmp/.X11-unix 2>/dev/null)" ]; then
-			if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 3 ]; then
-				xsockets+=(--ro-bind-try /tmp/.X11-unix/X"${xephyr_display}" /tmp/.X11-unix/X"${xephyr_display}" \
-						   --setenv "DISPLAY" :"${xephyr_display}")
-			else
-				for s in /tmp/.X11-unix/*; do
-					xsockets+=(--bind-try "${s}" "${s}")
-				done
-			fi
-		fi
-	else
-		show_msg "Access to X server is disabled"
-		xsockets+=(--ro-bind-try "${working_dir}"/running_"${script_id}" "${XAUTHORITY}" \
-				   --unsetenv "DISPLAY" \
+    if [ -z "${XAUTHORITY}" ]; then
+        XAUTHORITY="${HOME}"/.Xauthority
+    fi
+    xsockets+=(--tmpfs /tmp/.X11-unix)
+    if [ -n "${non_standard_home[*]}" ] && [ "${XAUTHORITY}" = "${HOME}"/.Xauthority ]; then
+        xsockets+=(--ro-bind-try "${XAUTHORITY}" "${NEW_HOME}"/.Xauthority \
+                   --setenv "XAUTHORITY" "${NEW_HOME}"/.Xauthority)
+    else
+        xsockets+=(--ro-bind-try "${XAUTHORITY}" "${XAUTHORITY}")
+    fi
+    if [ "${DISABLE_X11}" != 1 ]; then
+        if [ "$(ls /tmp/.X11-unix 2>/dev/null)" ]; then
+            if [ -n "${SANDBOX_LEVEL}" ] && [ "${SANDBOX_LEVEL}" -ge 3 ]; then
+                xsockets+=(--ro-bind-try /tmp/.X11-unix/X"${xephyr_display}" /tmp/.X11-unix/X"${xephyr_display}" \
+                           --setenv "DISPLAY" :"${xephyr_display}")
+            else
+                for s in /tmp/.X11-unix/*; do
+                    xsockets+=(--bind-try "${s}" "${s}")
+                done
+            fi
+        fi
+    else
+        show_msg "Access to X server is disabled"
+        xsockets+=(--ro-bind-try "${working_dir}"/running_"${script_id}" "${XAUTHORITY}" \
+                   --unsetenv "DISPLAY" \
                    --unsetenv "XAUTHORITY")
-	fi
+    fi
 }
 
+# Extracts the logic for binding root and other mounts into a new function.
 bind_root_and_mounts () {
-	if [ ! "$(ls "${mount_point}"/opt 2>/dev/null)" ] && [ -z "${SANDBOX}" ]; then
-		mount_opt=(--bind-try /opt /opt)
-	fi
-	if ([ "${NVIDIA_HANDLER}" = 1 ] || [ "${USE_OVERLAYFS}" = 1 ]) && \
-		[ "$(ls "${overlayfs_dir}"/merged 2>/dev/null)" ]; then
-		newroot_path="${overlayfs_dir}"/merged
-	else
-		newroot_path="${mount_point}"
-	fi
-	if [ "${RW_ROOT}" = 1 ]; then
-		bind_root=(--bind "${newroot_path}" /)
-	else
-		bind_root=(--ro-bind "${newroot_path}" /)
-	fi
+    if [ ! "$(ls "${mount_point}"/opt 2>/dev/null)" ] && [ -z "${SANDBOX}" ]; then
+        mount_opt=(--bind-try /opt /opt)
+    fi
+    if ([ "${NVIDIA_HANDLER}" = 1 ] || [ "${USE_OVERLAYFS}" = 1 ]) && \
+        [ "$(ls "${overlayfs_dir}"/merged 2>/dev/null)" ]; then
+        newroot_path="${overlayfs_dir}"/merged
+    else
+        newroot_path="${mount_point}"
+    fi
+    if [ "${RW_ROOT}" = 1 ]; then
+        bind_root=(--bind "${newroot_path}" /)
+    else
+        bind_root=(--ro-bind "${newroot_path}" /)
+    fi
 }
 
+# Extracts the logic for setting environment variables into a new function.
 set_environment_variables () {
-	conty_variables="BASE_DIR DISABLE_NET DISABLE_X11 HOME_DIR QUIET_MODE \
-					SANDBOX SANDBOX_LEVEL USE_OVERLAYFS NVIDIA_HANDLER \
-					USE_SYS_UTILS XEPHYR_SIZE CUSTOM_MNT"
-	for v in ${conty_variables}; do
-		set_vars+=(--unsetenv "${v}")
-	done
-	[ -n "${LD_PRELOAD_ORIG}" ] && set_vars+=(--setenv LD_PRELOAD "${LD_PRELOAD_ORIG}")
-	[ -n "${LD_LIBRARY_PATH_ORIG}" ] && set_vars+=(--setenv LD_LIBRARY_PATH "${LD_LIBRARY_PATH_ORIG}")
-	if [ -n "${LC_ALL_ORIG}" ]; then
-		set_vars+=(--setenv LC_ALL "${LC_ALL_ORIG}")
-	else
-		set_vars+=(--unsetenv LC_ALL)
-	fi
+    conty_variables="BASE_DIR DISABLE_NET DISABLE_X11 HOME_DIR QUIET_MODE \
+                     SANDBOX SANDBOX_LEVEL USE_OVERLAYFS NVIDIA_HANDLER \
+                     USE_SYS_UTILS XEPHYR_SIZE CUSTOM_MNT"
+    for v in ${conty_variables}; do
+        set_vars+=(--unsetenv "${v}")
+    done
+    [ -n "${LD_PRELOAD_ORIG}" ] && set_vars+=(--setenv LD_PRELOAD "${LD_PRELOAD_ORIG}")
+    [ -n "${LD_LIBRARY_PATH_ORIG}" ] && set_vars+=(--setenv LD_LIBRARY_PATH "${LD_LIBRARY_PATH_ORIG}")
+    if [ -n "${LC_ALL_ORIG}" ]; then
+        set_vars+=(--setenv LC_ALL "${LC_ALL_ORIG}")
+    else
+        set_vars+=(--unsetenv LC_ALL)
+    fi
 }
 exit_function () {
 	sleep 3
